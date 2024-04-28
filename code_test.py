@@ -1,64 +1,68 @@
-from PIL import Image
 import numpy as np
-from datetime import datetime
 import tensorflow as tf
+import cv2
 
-# Load TFLite model and allocate tensors
-interpreter = tf.lite.Interpreter(model_path="kkkl.tflite")
+# Paths for the image and model
+path = "orange_003.jpg"
+model_path = "good.tflite"
+
+# Load the TFLite model and allocate tensors
+interpreter = tf.lite.Interpreter(model_path=model_path)
 interpreter.allocate_tensors()
 
 # Get input and output details
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-# Load and preprocess the image
-# Load and preprocess the image
-img_name = '20240109_203301.jpg'
-img = Image.open(img_name)
-im_w, im_h = img.size  # Get dimensions before conversion
-img = img.resize((input_details[0]['shape'][2], input_details[0]['shape'][1]))
-img = np.array(img).astype(np.float32)  # Convert image to float32 numpy array
- 
-# Add batch dimension
-input_data = np.expand_dims(img, axis=0)
-print("Image path:", img_name)
-print("Input data shape:", input_data.shape)
+# Function to load and preprocess the image
+def load_and_preprocess_image(path):
+    img = cv2.imread(path)
+    #img = cv2.rotate(img, cv2.ROTATE_180)  # Rotate the image to the correct orientation
+
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Keep original orientation, remove rotation
+    img = cv2.resize(img, (320, 320))
+    img = (img / 255.0)    *2-1  # Normalize the image to the range [-1, 1]
+    img = img.astype(np.float32)
+
+    return np.expand_dims(img, axis=0)
+
+# Load and preprocess the input image
+image = load_and_preprocess_image(path)
 
 # Set the input tensor
-interpreter.set_tensor(input_details[0]['index'], input_data)
-# Perform inference
-startTime = datetime.now()
+interpreter.set_tensor(input_details[0]['index'], image)
+
+# Run the inference
 interpreter.invoke()
-delta = datetime.now() - startTime
-print("Inference time:", '%.1f' % (delta.total_seconds() * 1000), "ms")
 
-# Get output data
-# Get output data
+# Get the output tensor
 output_data = interpreter.get_tensor(output_details[0]['index'])
-results = np.squeeze(output_data)
 
-# Assuming results are structured as scores followed by bounding boxes
-# Example structure: [score1, score2, score3, ymin, xmin, ymax, xmax]
-scores = results[:, :3]  # Assuming first three are scores
-boxes = results[:, 3:]  # Assuming last four are bounding box coordinates
+# Assume scores are the first 3 entries and boxes the next 4 entries of the last dimension
+scores = output_data[0, :, :3]
+boxes = output_data[0, :, 3:7]
 
-# Apply a sigmoid function if scores are logits
-scores = 1 / (1 + np.exp(-scores))
-
-# Sort scores and select top indices
-top_indices = np.argsort(scores, axis=0)[:, ::-1]
-
-# Print the top detection results
-labels = ['Background', 'Apple', 'Orange']
-for label_idx, label in enumerate(labels):
-    print(f"Top 5 detections for {label}:")
-    for i in range(5):
-        index = top_indices[i, label_idx]
-        score = scores[index, label_idx]
-        ymin, xmin, ymax, xmax = boxes[index]
-        # Calculate bounding box positions on the image
-        left = int(xmin * im_w)
-        right = int(xmax * im_w)
-        top = int(ymin * im_h)
-        bottom = int(ymax * im_h)
-        print(f'Score: {score:.2f}. Location: ({left}, {top}, {right}, {bottom})')
+# Normalize scores using softmax
+scores = tf.nn.softmax(scores, axis=-1).numpy()
+boxes = tf.sigmoid(boxes).numpy()
+# Load the image for drawing boxes
+image = cv2.imread(path)
+image = cv2.resize(image, (320, 320))  # Ensure image is resized but not rotated
+print(scores)
+# Draw the bounding boxes on the image
+for i, score in enumerate(scores):
+    
+    label = np.argmax(score[1:]) + 1  # Adjusting for class indexing
+    confidence = score[label]
+    if confidence > 0.99:
+        print(boxes[i])
+        cx, cy, h, w = boxes[i]
+        xmin = int((cx - w / 2) * 320)
+        xmax = int((cx + w / 2) * 320)
+        ymin = int((cy - h / 2) * 320)
+        ymax = int((cy + h / 2) * 320)
+        cv2.rectangle(image, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+        cv2.putText(image, f"{label} {confidence:.2f}", (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+cv2.imshow("Image with Bounding Boxes", image)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
